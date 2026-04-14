@@ -44,7 +44,7 @@ import type {
   ClaudeCliResult,
   ClaudeCliStreamEvent,
 } from "../types/claude-cli.js";
-import { runtimeConfig } from "../config.js";
+import { runtimeConfig, persistRuntimeState } from "../config.js";
 
 // ---------------------------------------------------------------------------
 // Thinking budget resolution
@@ -1349,6 +1349,7 @@ export function handleSetThinkingBudget(req: Request, res: Response): void {
 
   if (raw === null || raw === undefined || raw === "") {
     runtimeConfig.defaultThinkingBudget = undefined;
+    persistRuntimeState();
     log("admin.thinking_budget.cleared", {});
     res.json({ budget: null });
     return;
@@ -1368,6 +1369,7 @@ export function handleSetThinkingBudget(req: Request, res: Response): void {
   }
 
   runtimeConfig.defaultThinkingBudget = asString;
+  persistRuntimeState();
   log("admin.thinking_budget.set", { budget: asString, tokens: parsed });
   res.json({ budget: asString, tokens: parsed });
 }
