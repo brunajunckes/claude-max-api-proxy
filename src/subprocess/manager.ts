@@ -117,7 +117,7 @@ export class ClaudeSubprocess extends EventEmitter {
    * No timeout is set here — caller owns timeout behavior (Phase 1c).
    */
   async start(prompt: string, options: SubprocessOptions): Promise<void> {
-    const args = this.buildArgs(prompt, options);
+    const { args, prompt: finalPrompt } = this.buildArgs(prompt, options);
 
     return new Promise<void>((resolve, reject) => {
       try {
@@ -139,6 +139,10 @@ export class ClaudeSubprocess extends EventEmitter {
           }
         });
 
+        // Pipe the prompt through stdin. Passing large prompts as argv
+        // (OpenClaw system prompts + history) hits the kernel's ARG_MAX
+        // limit and spawn() fails with E2BIG.
+        this.process.stdin?.write(finalPrompt);
         this.process.stdin?.end();
 
         const pid = this.process.pid;
@@ -184,7 +188,10 @@ export class ClaudeSubprocess extends EventEmitter {
     });
   }
 
-  private buildArgs(prompt: string, options: SubprocessOptions): string[] {
+  private buildArgs(
+    prompt: string,
+    options: SubprocessOptions,
+  ): { args: string[]; prompt: string } {
     const args = [
       "--print",
       "--output-format",
@@ -236,8 +243,7 @@ export class ClaudeSubprocess extends EventEmitter {
       if (level) args.push("--effort", level);
     }
 
-    args.push(finalPrompt);
-    return args;
+    return { args, prompt: finalPrompt };
   }
 
   private processBuffer(): void {
