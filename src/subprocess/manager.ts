@@ -10,11 +10,24 @@
  */
 import { spawn, type ChildProcess } from "child_process";
 import { EventEmitter } from "events";
-import { isAssistantMessage, isResultMessage, isContentDelta } from "../types/claude-cli.js";
-import type { ClaudeCliMessage, ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
+import {
+  isAssistantMessage,
+  isResultMessage,
+  isContentDelta,
+} from "../types/claude-cli.js";
+import type {
+  ClaudeCliMessage,
+  ClaudeCliAssistant,
+  ClaudeCliResult,
+  ClaudeCliStreamEvent,
+} from "../types/claude-cli.js";
 import type { ClaudeModel } from "../adapter/openai-to-cli.js";
 import { log } from "../logger.js";
-import { getCleanClaudeEnv, verifyClaude, verifyAuth } from "../claude-cli.inspect.js";
+import {
+  getCleanClaudeEnv,
+  verifyClaude,
+  verifyAuth,
+} from "../claude-cli.inspect.js";
 
 const KILL_ESCALATION_MS = 5000;
 
@@ -59,7 +72,9 @@ class SubprocessRegistry {
   }
 
   killAll(): void {
-    log("server.shutdown", { reason: `Killing ${this.active.size} active subprocesses` });
+    log("server.shutdown", {
+      reason: `Killing ${this.active.size} active subprocesses`,
+    });
     for (const [, sub] of this.active) {
       sub.kill();
     }
@@ -75,6 +90,21 @@ class SubprocessRegistry {
 }
 
 export const subprocessRegistry = new SubprocessRegistry();
+
+/**
+ * Map a thinking budget (token count) to the Claude CLI's --effort level.
+ * The CLI no longer accepts a raw token count; only level names.
+ *
+ * Thresholds chosen to line up with the REASONING_EFFORT_MAP in routes.ts:
+ *   minimal = 1024, low = 5000, medium = 10000, high = 32000
+ */
+function thinkingBudgetToEffort(budget: number): string | undefined {
+  if (!Number.isFinite(budget) || budget <= 0) return undefined;
+  if (budget >= 32000) return "max";
+  if (budget >= 10000) return "high";
+  if (budget >= 5000) return "medium";
+  return "low";
+}
 
 export class ClaudeSubprocess extends EventEmitter {
   private process: ChildProcess | null = null;
@@ -99,7 +129,11 @@ export class ClaudeSubprocess extends EventEmitter {
 
         this.process.on("error", (err: NodeJS.ErrnoException) => {
           if (err.code === "ENOENT") {
-            reject(new Error("Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code"));
+            reject(
+              new Error(
+                "Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code",
+              ),
+            );
           } else {
             reject(err);
           }
@@ -149,10 +183,12 @@ export class ClaudeSubprocess extends EventEmitter {
   private buildArgs(prompt: string, options: SubprocessOptions): string[] {
     const args = [
       "--print",
-      "--output-format", "stream-json",
+      "--output-format",
+      "stream-json",
       "--verbose",
       "--include-partial-messages",
-      "--model", options.model,
+      "--model",
+      options.model,
       "--dangerously-skip-permissions",
     ];
 
@@ -188,8 +224,12 @@ export class ClaudeSubprocess extends EventEmitter {
       args.push("--fallback-model", "sonnet");
     }
 
+    // Map thinking budget (token count) to Claude CLI's --effort levels.
+    // The CLI no longer supports a raw token budget; only level-based effort.
+    // Mapping matches the inverse of REASONING_EFFORT_MAP in routes.ts.
     if (options.thinkingBudget) {
-      args.push("--extended-thinking-budget", String(options.thinkingBudget));
+      const level = thinkingBudgetToEffort(options.thinkingBudget);
+      if (level) args.push("--effort", level);
     }
 
     args.push(finalPrompt);
@@ -236,7 +276,11 @@ export class ClaudeSubprocess extends EventEmitter {
     // Escalate to SIGKILL if process doesn't exit within grace period
     this.escalationTimer = setTimeout(() => {
       if (this.process && this.process.exitCode === null) {
-        log("subprocess.kill", { pid, signal: "SIGKILL", reason: "escalation after SIGTERM timeout" });
+        log("subprocess.kill", {
+          pid,
+          signal: "SIGKILL",
+          reason: "escalation after SIGTERM timeout",
+        });
         this.process.kill("SIGKILL");
       }
     }, KILL_ESCALATION_MS);
@@ -251,7 +295,9 @@ export class ClaudeSubprocess extends EventEmitter {
   }
 
   isRunning(): boolean {
-    return this.process !== null && !this.killed && this.process.exitCode === null;
+    return (
+      this.process !== null && !this.killed && this.process.exitCode === null
+    );
   }
 
   getPid(): number | null {
