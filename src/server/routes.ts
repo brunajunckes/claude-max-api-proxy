@@ -22,7 +22,12 @@ import { v4 as uuidv4 } from "uuid";
 import { ClaudeSubprocess, subprocessRegistry } from "../subprocess/manager.js";
 import { openaiToCli } from "../adapter/openai-to-cli.js";
 import type { CliInput } from "../adapter/openai-to-cli.js";
-import { cliResultToOpenai, createDoneChunk, estimateTokens, validateTokens } from "../adapter/cli-to-openai.js";
+import {
+  cliResultToOpenai,
+  createDoneChunk,
+  estimateTokens,
+  validateTokens,
+} from "../adapter/cli-to-openai.js";
 import { extractTextContent } from "../adapter/cli-to-openai.js";
 import { sessionManager } from "../session/manager.js";
 import { conversationStore } from "../store/conversation.js";
@@ -30,9 +35,85 @@ import { subprocessPool } from "../subprocess/pool.js";
 import { getModelTimeout, getStallTimeout, isValidModel } from "../models.js";
 import { log, logError } from "../logger.js";
 import { modelAvailability } from "../model-availability.js";
-import { extractClaudeErrorFromResult, type ClaudeProxyError } from "../claude-cli.inspect.js";
-import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
-import { runtimeConfig } from "../config.js";
+import {
+  extractClaudeErrorFromResult,
+  type ClaudeProxyError,
+} from "../claude-cli.inspect.js";
+import type {
+  ClaudeCliAssistant,
+  ClaudeCliResult,
+  ClaudeCliStreamEvent,
+} from "../types/claude-cli.js";
+import { runtimeConfig, persistRuntimeState } from "../config.js";
+
+// ---------------------------------------------------------------------------
+// Thinking budget resolution
+// ---------------------------------------------------------------------------
+
+// Label → token-budget mapping. Labels match Claude CLI's --effort levels
+// (low, medium, high, max). "off" disables extended thinking (no --effort flag).
+const REASONING_EFFORT_MAP: Record<string, number> = {
+  off: 0,
+  low: 5000,
+  medium: 10000,
+  high: 32000,
+  max: 64000,
+};
+
+function parseEffortOrTokens(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const lower = trimmed.toLowerCase();
+  if (lower in REASONING_EFFORT_MAP) return REASONING_EFFORT_MAP[lower];
+  const parsed = parseInt(trimmed, 10);
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  return undefined;
+}
+
+/**
+ * Resolve thinking budget from multiple sources in priority order:
+ *   1. Request body `thinking.budget_tokens` (Anthropic style — explicit)
+ *   2. Request body `reasoning_effort` (OpenAI style — "low" | "medium" | "high" | "minimal")
+ *   3. Request header `X-Thinking-Budget` (simple client override)
+ *   4. Environment variable `DEFAULT_THINKING_BUDGET` (server default)
+ *
+ * Returns `undefined` when no source provides a value (thinking stays off).
+ */
+function resolveThinkingBudget(
+  req: Request,
+  body: Record<string, unknown>,
+): number | undefined {
+  const thinking = body.thinking as
+    | { type?: string; budget_tokens?: number }
+    | undefined;
+  if (
+    thinking?.type === "enabled" &&
+    typeof thinking.budget_tokens === "number" &&
+    thinking.budget_tokens > 0
+  ) {
+    return thinking.budget_tokens;
+  }
+
+  const effort = body.reasoning_effort;
+  if (typeof effort === "string") {
+    const value = parseEffortOrTokens(effort);
+    if (value !== undefined) return value > 0 ? value : undefined;
+  }
+
+  const headerVal = req.header("x-thinking-budget");
+  if (headerVal) {
+    const value = parseEffortOrTokens(headerVal);
+    if (value !== undefined) return value > 0 ? value : undefined;
+  }
+
+  const runtimeDefault = runtimeConfig.defaultThinkingBudget;
+  if (runtimeDefault) {
+    const value = parseEffortOrTokens(runtimeDefault);
+    if (value !== undefined) return value > 0 ? value : undefined;
+  }
+
+  return undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Queue infrastructure
@@ -75,7 +156,12 @@ class RequestCancelledError extends Error {
  * Phase 3a: Wraps handler with an absolute queue timeout.
  * Phase 5a: Scale timeout buffer based on queue depth to prevent stacking timeouts
  */
-function enqueueRequest(conversationId: string, requestId: string, handler: () => Promise<void>, hardTimeoutMs: number): Promise<void> {
+function enqueueRequest(
+  conversationId: string,
+  requestId: string,
+  handler: () => Promise<void>,
+  hardTimeoutMs: number,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let entry = conversationQueues.get(conversationId);
     if (!entry) {
@@ -95,7 +181,9 @@ function enqueueRequest(conversationId: string, requestId: string, handler: () =
         return new Promise<void>((handlerResolve, handlerReject) => {
           const queueTimer = setTimeout(() => {
             log("queue.timeout", { conversationId, timeoutMs: queueTimeoutMs });
-            handlerReject(new Error(`Queue timeout after ${queueTimeoutMs / 1000}s`));
+            handlerReject(
+              new Error(`Queue timeout after ${queueTimeoutMs / 1000}s`),
+            );
           }, queueTimeoutMs);
 
           handler()
@@ -181,7 +269,11 @@ class CleanupSet {
     if (this.ran) return;
     this.ran = true;
     for (const fn of this.fns) {
-      try { fn(); } catch (e) { console.error("[Cleanup] Error:", e); }
+      try {
+        fn();
+      } catch (e) {
+        console.error("[Cleanup] Error:", e);
+      }
     }
     this.fns.clear();
   }
@@ -221,18 +313,25 @@ function startStreamingResponse(res: Response, requestId: string): void {
 
 function writeStreamingError(res: Response, error: ClaudeProxyError): void {
   if (res.writableEnded) return;
-  res.write(`data: ${JSON.stringify({
-    error: {
-      message: error.message,
-      type: error.type,
-      code: error.code,
-    },
-  })}\n\n`);
+  res.write(
+    `data: ${JSON.stringify({
+      error: {
+        message: error.message,
+        type: error.type,
+        code: error.code,
+      },
+    })}\n\n`,
+  );
   res.write("data: [DONE]\n\n");
   res.end();
 }
 
-function respondWithError(res: Response, error: ClaudeProxyError, stream: boolean, requestId: string): void {
+function respondWithError(
+  res: Response,
+  error: ClaudeProxyError,
+  stream: boolean,
+  requestId: string,
+): void {
   if (res.writableEnded) return;
 
   if (stream) {
@@ -248,12 +347,18 @@ function respondWithError(res: Response, error: ClaudeProxyError, stream: boolea
   }
 }
 
-function logQueueDebug(event: "queue.enqueue" | "queue.drop" | "queue.blocked" | "request.cancel", fields: Record<string, unknown>): void {
+function logQueueDebug(
+  event: "queue.enqueue" | "queue.drop" | "queue.blocked" | "request.cancel",
+  fields: Record<string, unknown>,
+): void {
   if (!runtimeConfig.debugQueues) return;
   log(event, fields);
 }
 
-function createSupersededError(conversationId: string, supersedingRequestId: string): ClaudeProxyError {
+function createSupersededError(
+  conversationId: string,
+  supersedingRequestId: string,
+): ClaudeProxyError {
   return {
     status: 409,
     type: "invalid_request_error",
@@ -262,7 +367,10 @@ function createSupersededError(conversationId: string, supersedingRequestId: str
   };
 }
 
-function clearQueuedRequests(conversationId: string, supersedingRequestId: string): void {
+function clearQueuedRequests(
+  conversationId: string,
+  supersedingRequestId: string,
+): void {
   const entry = conversationQueues.get(conversationId);
   if (!entry || entry.queue.length === 0) return;
 
@@ -281,11 +389,18 @@ function clearQueuedRequests(conversationId: string, supersedingRequestId: strin
       supersedingRequestId,
       droppedQueuedRequests: staleItems.length,
     });
-    item.reject(new RequestCancelledError(createSupersededError(conversationId, supersedingRequestId)));
+    item.reject(
+      new RequestCancelledError(
+        createSupersededError(conversationId, supersedingRequestId),
+      ),
+    );
   }
 }
 
-function supersedeActiveRequest(conversationId: string, supersedingRequestId: string): void {
+function supersedeActiveRequest(
+  conversationId: string,
+  supersedingRequestId: string,
+): void {
   const active = activeRequests.get(conversationId);
   if (!active || active.requestId === supersedingRequestId) return;
 
@@ -349,13 +464,20 @@ function registerActiveRequest(
 // Main handler
 // ---------------------------------------------------------------------------
 
-export async function handleChatCompletions(req: Request, res: Response): Promise<void> {
+export async function handleChatCompletions(
+  req: Request,
+  res: Response,
+): Promise<void> {
   const requestId = uuidv4().replace(/-/g, "").slice(0, 24);
   const body = req.body as Record<string, unknown>;
   const stream = body.stream === true;
   const requestedModel = body.model ? String(body.model) : undefined;
 
-  if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+  if (
+    !body.messages ||
+    !Array.isArray(body.messages) ||
+    body.messages.length === 0
+  ) {
     res.status(400).json({
       error: {
         message: "messages is required and must be a non-empty array",
@@ -383,12 +505,15 @@ export async function handleChatCompletions(req: Request, res: Response): Promis
       status: 503,
       type: "server_error",
       code: "no_models_available",
-      message: availability.unavailable[0]?.error.message || "No Claude models are currently accessible via Claude CLI.",
+      message:
+        availability.unavailable[0]?.error.message ||
+        "No Claude models are currently accessible via Claude CLI.",
     });
     return;
   }
 
-  const resolvedModel = await modelAvailability.resolveRequestedModel(requestedModel);
+  const resolvedModel =
+    await modelAvailability.resolveRequestedModel(requestedModel);
   if (!resolvedModel) {
     sendJsonError(res, {
       status: 503,
@@ -431,53 +556,102 @@ export async function handleChatCompletions(req: Request, res: Response): Promis
   }
 
   // Compute hard timeout for queue wrapper
-  const thinking = body.thinking as { type?: string; budget_tokens?: number } | undefined;
+  const thinkingBudget = resolveThinkingBudget(
+    req,
+    body as Record<string, unknown>,
+  );
   const tempModel = requestedModel || resolvedModel.id;
   const baseTimeout = getModelTimeout(tempModel);
-  const hardTimeout = (thinking?.type === "enabled" && thinking.budget_tokens) ? baseTimeout * 3 : baseTimeout;
+  const hardTimeout = thinkingBudget ? baseTimeout * 3 : baseTimeout;
 
-  log("request.start", { requestId, conversationId, model: tempModel, stream, queueDepth });
+  log("request.start", {
+    requestId,
+    conversationId,
+    model: tempModel,
+    stream,
+    queueDepth,
+  });
 
   try {
-    await enqueueRequest(conversationId, requestId, async () => {
-      const activeRequest = registerActiveRequest(conversationId, requestId, stream);
-      try {
-        const { sessionId, isResume } = sessionManager.getOrCreate(conversationId, resolvedModel.id);
+    await enqueueRequest(
+      conversationId,
+      requestId,
+      async () => {
+        const activeRequest = registerActiveRequest(
+          conversationId,
+          requestId,
+          stream,
+        );
+        try {
+          const { sessionId, isResume } = sessionManager.getOrCreate(
+            conversationId,
+            resolvedModel.id,
+          );
 
-        // Phase 5d: Log session context size for token accounting
-        if (isResume) {
-          const contextSize = sessionManager.getContextSizeEstimate(conversationId);
-          log("session.context", { conversationId, estimatedContextTokens: contextSize, isResume });
-        }
+          // Phase 5d: Log session context size for token accounting
+          if (isResume) {
+            const contextSize =
+              sessionManager.getContextSizeEstimate(conversationId);
+            log("session.context", {
+              conversationId,
+              estimatedContextTokens: contextSize,
+              isResume,
+            });
+          }
 
-        conversationStore.ensureConversation(conversationId, resolvedModel.id, sessionId);
-        const messages = body.messages as Array<{ role: string; content: string }>;
-        const lastUserMsg = messages.filter(m => m.role === "user").pop();
-        if (lastUserMsg) {
-          const content = typeof lastUserMsg.content === "string"
-            ? lastUserMsg.content
-            : JSON.stringify(lastUserMsg.content);
-          conversationStore.addMessage(conversationId, "user", content);
-        }
+          conversationStore.ensureConversation(
+            conversationId,
+            resolvedModel.id,
+            sessionId,
+          );
+          const messages = body.messages as Array<{
+            role: string;
+            content: string;
+          }>;
+          const lastUserMsg = messages.filter((m) => m.role === "user").pop();
+          if (lastUserMsg) {
+            const content =
+              typeof lastUserMsg.content === "string"
+                ? lastUserMsg.content
+                : JSON.stringify(lastUserMsg.content);
+            conversationStore.addMessage(conversationId, "user", content);
+          }
 
-        const cliInput = openaiToCli(body as unknown as Parameters<typeof openaiToCli>[0], isResume, resolvedModel.id);
-        cliInput.sessionId = sessionId;
-        cliInput.isResume = isResume;
-        cliInput._conversationId = conversationId;
-        cliInput._startTime = startTime;
-        if (thinking?.type === "enabled" && thinking.budget_tokens) {
-          cliInput.thinkingBudget = thinking.budget_tokens;
-        }
+          const cliInput = openaiToCli(
+            body as unknown as Parameters<typeof openaiToCli>[0],
+            isResume,
+            resolvedModel.id,
+          );
+          cliInput.sessionId = sessionId;
+          cliInput.isResume = isResume;
+          cliInput._conversationId = conversationId;
+          cliInput._startTime = startTime;
+          if (thinkingBudget) {
+            cliInput.thinkingBudget = thinkingBudget;
+          }
 
-        if (stream) {
-          await handleStreamingResponse(req, res, cliInput, requestId, activeRequest.setCancel);
-        } else {
-          await handleNonStreamingResponse(res, cliInput, requestId, activeRequest.setCancel);
+          if (stream) {
+            await handleStreamingResponse(
+              req,
+              res,
+              cliInput,
+              requestId,
+              activeRequest.setCancel,
+            );
+          } else {
+            await handleNonStreamingResponse(
+              res,
+              cliInput,
+              requestId,
+              activeRequest.setCancel,
+            );
+          }
+        } finally {
+          activeRequest.clear();
         }
-      } finally {
-        activeRequest.clear();
-      }
-    }, hardTimeout);
+      },
+      hardTimeout,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     logError("request.error", error, { requestId, conversationId });
@@ -486,7 +660,12 @@ export async function handleChatCompletions(req: Request, res: Response): Promis
       return;
     }
     if (!res.headersSent) {
-      sendJsonError(res, { status: 500, message, type: "server_error", code: null });
+      sendJsonError(res, {
+        status: 500,
+        message,
+        type: "server_error",
+        code: null,
+      });
     }
   }
 }
@@ -508,16 +687,22 @@ interface StreamOpts {
  * returns a promise that resolves when the subprocess completes.
  * Eliminates the duplicated event handler wiring from the old retry logic.
  */
-function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: string; success: boolean; cancelled: boolean }> {
+function runStreamingSubprocess(
+  opts: StreamOpts,
+): Promise<{ fullResponse: string; success: boolean; cancelled: boolean }> {
   const { cliInput, requestId, res, onStall, registerCancel } = opts;
 
   const baseTimeout = getModelTimeout(cliInput.model);
   const hardTimeout = cliInput.thinkingBudget ? baseTimeout * 3 : baseTimeout;
   const stallTimeout = cliInput.thinkingBudget
-    ? getStallTimeout(cliInput.model) * 3  // thinking blocks can take a long time before first text
+    ? getStallTimeout(cliInput.model) * 3 // thinking blocks can take a long time before first text
     : getStallTimeout(cliInput.model);
 
-  return new Promise<{ fullResponse: string; success: boolean; cancelled: boolean }>((resolve) => {
+  return new Promise<{
+    fullResponse: string;
+    success: boolean;
+    cancelled: boolean;
+  }>((resolve) => {
     const subprocess = new ClaudeSubprocess();
     const cleanup = new CleanupSet();
 
@@ -533,7 +718,11 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
     let firstByteTime = 0;
     const chunkId = `chatcmpl-${requestId}`;
 
-    const buildChunk = (text: string, model: string, first: boolean): string => {
+    const buildChunk = (
+      text: string,
+      model: string,
+      first: boolean,
+    ): string => {
       const escaped = JSON.stringify(text);
       const ts = Math.floor(Date.now() / 1000);
       if (first) {
@@ -573,9 +762,15 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
           sessionManager.delete(cliInput._conversationId);
         }
         if (!clientDisconnected && !res.writableEnded) {
-          res.write(`data: ${JSON.stringify({
-            error: { message: `Request timed out after ${hardTimeout / 1000}s`, type: "timeout_error", code: null },
-          })}\n\n`);
+          res.write(
+            `data: ${JSON.stringify({
+              error: {
+                message: `Request timed out after ${hardTimeout / 1000}s`,
+                type: "timeout_error",
+                code: null,
+              },
+            })}\n\n`,
+          );
           res.write("data: [DONE]\n\n");
           res.end();
         }
@@ -586,35 +781,44 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
 
     // Stall detection (Phase 1a): check periodically if lastActivityAt has gone stale
     // Phase 5b: Do NOT delete session on stall - it's transient. Only mark as failed for retry logic.
-    const stallCheckInterval = setInterval(() => {
-      if (isComplete) return;
-      const stalledFor = Date.now() - lastActivityAt;
-      if (stalledFor > stallTimeout) {
-        stallDetections++;
-        log("subprocess.stall", {
-          requestId,
-          conversationId: cliInput._conversationId,
-          pid: subprocess.getPid(),
-          stalledMs: stalledFor,
-          stallTimeoutMs: stallTimeout,
-          model: cliInput.model,
-        });
-        subprocess.kill();
-        // Phase 5b: Mark as failed for retry (don't delete - it may be recoverable)
-        if (cliInput._conversationId) {
-          sessionManager.markFailed(cliInput._conversationId);
+    const stallCheckInterval = setInterval(
+      () => {
+        if (isComplete) return;
+        const stalledFor = Date.now() - lastActivityAt;
+        if (stalledFor > stallTimeout) {
+          stallDetections++;
+          log("subprocess.stall", {
+            requestId,
+            conversationId: cliInput._conversationId,
+            pid: subprocess.getPid(),
+            stalledMs: stalledFor,
+            stallTimeoutMs: stallTimeout,
+            model: cliInput.model,
+          });
+          subprocess.kill();
+          // Phase 5b: Mark as failed for retry (don't delete - it may be recoverable)
+          if (cliInput._conversationId) {
+            sessionManager.markFailed(cliInput._conversationId);
+          }
+          if (!clientDisconnected && !res.writableEnded) {
+            res.write(
+              `data: ${JSON.stringify({
+                error: {
+                  message: `Subprocess stalled (no activity for ${Math.round(stalledFor / 1000)}s)`,
+                  type: "timeout_error",
+                  code: "stall_detected",
+                },
+              })}\n\n`,
+            );
+            res.write("data: [DONE]\n\n");
+            res.end();
+          }
+          onStall();
+          finish(false);
         }
-        if (!clientDisconnected && !res.writableEnded) {
-          res.write(`data: ${JSON.stringify({
-            error: { message: `Subprocess stalled (no activity for ${Math.round(stalledFor / 1000)}s)`, type: "timeout_error", code: "stall_detected" },
-          })}\n\n`);
-          res.write("data: [DONE]\n\n");
-          res.end();
-        }
-        onStall();
-        finish(false);
-      }
-    }, Math.min(stallTimeout / 2, 10000));
+      },
+      Math.min(stallTimeout / 2, 10000),
+    );
     cleanup.add(() => clearInterval(stallCheckInterval));
 
     registerCancel?.((error: ClaudeProxyError) => {
@@ -644,8 +848,14 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
       subprocess.kill();
       if (fullResponse && cliInput._conversationId) {
         try {
-          conversationStore.addMessage(cliInput._conversationId, "assistant", fullResponse + "\n\n[Response truncated — client disconnected]");
-        } catch (e) { console.error("[Routes] Store error:", e); }
+          conversationStore.addMessage(
+            cliInput._conversationId,
+            "assistant",
+            fullResponse + "\n\n[Response truncated — client disconnected]",
+          );
+        } catch (e) {
+          console.error("[Routes] Store error:", e);
+        }
       }
       finish(false, true);
     };
@@ -686,9 +896,17 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
     subprocess.on("result", (result: ClaudeCliResult) => {
       lastActivityAt = Date.now();
 
-      const cliError = extractClaudeErrorFromResult(result, lastAssistantText, lastAssistantError);
+      const cliError = extractClaudeErrorFromResult(
+        result,
+        lastAssistantText,
+        lastAssistantError,
+      );
       if (cliError) {
-        log("request.error", { requestId, conversationId: cliInput._conversationId, reason: cliError.message });
+        log("request.error", {
+          requestId,
+          conversationId: cliInput._conversationId,
+          reason: cliError.message,
+        });
         if (cliInput._conversationId && cliInput.isResume) {
           sessionManager.markFailed(cliInput._conversationId);
         }
@@ -700,7 +918,9 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
             error: cliError.message,
             clientDisconnected,
           });
-        } catch (e) { console.error("[Routes] Metric error:", e); }
+        } catch (e) {
+          console.error("[Routes] Metric error:", e);
+        }
 
         if (!clientDisconnected && !res.writableEnded) {
           writeStreamingError(res, cliError);
@@ -714,7 +934,11 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
       if (result?.usage) {
         const promptTokens = result.usage.input_tokens || 0;
         const completionTokens = result.usage.output_tokens || 0;
-        const validation = validateTokens(promptTokens, completionTokens, fullResponse.length);
+        const validation = validateTokens(
+          promptTokens,
+          completionTokens,
+          fullResponse.length,
+        );
         if (!validation.valid) {
           log("token.validation_failed", {
             requestId,
@@ -749,7 +973,11 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
 
       try {
         if (fullResponse && cliInput._conversationId) {
-          conversationStore.addMessage(cliInput._conversationId, "assistant", fullResponse);
+          conversationStore.addMessage(
+            cliInput._conversationId,
+            "assistant",
+            fullResponse,
+          );
         }
         conversationStore.recordMetric("request_complete", {
           conversationId: cliInput._conversationId,
@@ -757,7 +985,9 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
           success: true,
           clientDisconnected,
         });
-      } catch (e) { console.error("[Routes] Store error:", e); }
+      } catch (e) {
+        console.error("[Routes] Store error:", e);
+      }
 
       // Mark session success
       if (cliInput._conversationId && cliInput.isResume) {
@@ -799,12 +1029,16 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
           error: error.message,
           clientDisconnected,
         });
-      } catch (e) { console.error("[Routes] Metric error:", e); }
+      } catch (e) {
+        console.error("[Routes] Metric error:", e);
+      }
 
       if (!clientDisconnected && !res.writableEnded) {
-        res.write(`data: ${JSON.stringify({
-          error: { message: error.message, type: "server_error", code: null },
-        })}\n\n`);
+        res.write(
+          `data: ${JSON.stringify({
+            error: { message: error.message, type: "server_error", code: null },
+          })}\n\n`,
+        );
         res.write("data: [DONE]\n\n");
         res.end();
       }
@@ -815,9 +1049,15 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
       if (!isComplete) {
         if (!clientDisconnected && !res.writableEnded) {
           if (code !== 0) {
-            res.write(`data: ${JSON.stringify({
-              error: { message: `Process exited with code ${code}`, type: "server_error", code: null },
-            })}\n\n`);
+            res.write(
+              `data: ${JSON.stringify({
+                error: {
+                  message: `Process exited with code ${code}`,
+                  type: "server_error",
+                  code: null,
+                },
+              })}\n\n`,
+            );
           }
           res.write("data: [DONE]\n\n");
           res.end();
@@ -836,11 +1076,16 @@ function runStreamingSubprocess(opts: StreamOpts): Promise<{ fullResponse: strin
     };
 
     subprocess.start(cliInput.prompt, startOpts).catch((err: Error) => {
-      logError("request.error", err, { requestId, reason: "subprocess_start_failed" });
+      logError("request.error", err, {
+        requestId,
+        reason: "subprocess_start_failed",
+      });
       if (!clientDisconnected && !res.writableEnded) {
-        res.write(`data: ${JSON.stringify({
-          error: { message: err.message, type: "server_error", code: null },
-        })}\n\n`);
+        res.write(
+          `data: ${JSON.stringify({
+            error: { message: err.message, type: "server_error", code: null },
+          })}\n\n`,
+        );
         res.write("data: [DONE]\n\n");
         res.end();
       }
@@ -879,7 +1124,10 @@ async function handleStreamingResponse(
 
   // Retry once on failure (Phase 2a: clean retry without duplicated handlers)
   if (!res.writableEnded) {
-    log("request.retry", { requestId, conversationId: cliInput._conversationId });
+    log("request.retry", {
+      requestId,
+      conversationId: cliInput._conversationId,
+    });
 
     // If resume failed, retry without resume
     const retryCli: CliInput = { ...cliInput };
@@ -887,11 +1135,14 @@ async function handleStreamingResponse(
       sessionManager.markFailed(cliInput._conversationId);
       retryCli.isResume = false;
       // Get fresh session
-      const { sessionId } = sessionManager.getOrCreate(cliInput._conversationId, cliInput.model);
+      const { sessionId } = sessionManager.getOrCreate(
+        cliInput._conversationId,
+        cliInput.model,
+      );
       retryCli.sessionId = sessionId;
     }
 
-    await new Promise(r => setTimeout(r, 1000)); // Brief backoff
+    await new Promise((r) => setTimeout(r, 1000)); // Brief backoff
 
     await runStreamingSubprocess({
       cliInput: retryCli,
@@ -945,11 +1196,19 @@ async function handleNonStreamingResponse(
 
     const timeoutId = setTimeout(() => {
       if (!isComplete) {
-        log("request.timeout", { requestId, conversationId: cliInput._conversationId, timeoutMs: timeout });
+        log("request.timeout", {
+          requestId,
+          conversationId: cliInput._conversationId,
+          timeoutMs: timeout,
+        });
         subprocess.kill();
         if (!res.headersSent) {
           res.status(504).json({
-            error: { message: `Request timed out after ${timeout / 1000}s`, type: "timeout_error", code: null },
+            error: {
+              message: `Request timed out after ${timeout / 1000}s`,
+              type: "timeout_error",
+              code: null,
+            },
           });
         }
         isComplete = true;
@@ -984,9 +1243,17 @@ async function handleNonStreamingResponse(
       isComplete = true;
       cleanup.runAll();
       if (finalResult) {
-        const cliError = extractClaudeErrorFromResult(finalResult, lastAssistantText, lastAssistantError);
+        const cliError = extractClaudeErrorFromResult(
+          finalResult,
+          lastAssistantText,
+          lastAssistantError,
+        );
         if (cliError) {
-          log("request.error", { requestId, conversationId: cliInput._conversationId, reason: cliError.message });
+          log("request.error", {
+            requestId,
+            conversationId: cliInput._conversationId,
+            reason: cliError.message,
+          });
           try {
             conversationStore.recordMetric("request_error", {
               conversationId: cliInput._conversationId,
@@ -994,7 +1261,9 @@ async function handleNonStreamingResponse(
               success: false,
               error: cliError.message,
             });
-          } catch (e) { console.error("[Routes] Metric error:", e); }
+          } catch (e) {
+            console.error("[Routes] Metric error:", e);
+          }
 
           if (cliInput._conversationId && cliInput.isResume) {
             sessionManager.markFailed(cliInput._conversationId);
@@ -1009,14 +1278,20 @@ async function handleNonStreamingResponse(
 
         try {
           if (finalResult.result && cliInput._conversationId) {
-            conversationStore.addMessage(cliInput._conversationId, "assistant", finalResult.result);
+            conversationStore.addMessage(
+              cliInput._conversationId,
+              "assistant",
+              finalResult.result,
+            );
           }
           conversationStore.recordMetric("request_complete", {
             conversationId: cliInput._conversationId,
             durationMs: Date.now() - (cliInput._startTime || Date.now()),
             success: true,
           });
-        } catch (e) { console.error("[Routes] Store error:", e); }
+        } catch (e) {
+          console.error("[Routes] Store error:", e);
+        }
 
         if (cliInput._conversationId && cliInput.isResume) {
           sessionManager.markSuccess(cliInput._conversationId);
@@ -1037,29 +1312,76 @@ async function handleNonStreamingResponse(
       resolve();
     });
 
-    subprocess.start(cliInput.prompt, {
-      model: cliInput.model,
-      sessionId: cliInput.sessionId,
-      systemPrompt: cliInput.systemPrompt,
-      isResume: cliInput.isResume,
-      thinkingBudget: cliInput.thinkingBudget,
-    }).catch((error: Error) => {
-      cleanup.runAll();
-      if (!res.headersSent) {
-        res.status(500).json({
-          error: { message: error.message, type: "server_error", code: null },
-        });
-      }
-      resolve();
-    });
+    subprocess
+      .start(cliInput.prompt, {
+        model: cliInput.model,
+        sessionId: cliInput.sessionId,
+        systemPrompt: cliInput.systemPrompt,
+        isResume: cliInput.isResume,
+        thinkingBudget: cliInput.thinkingBudget,
+      })
+      .catch((error: Error) => {
+        cleanup.runAll();
+        if (!res.headersSent) {
+          res.status(500).json({
+            error: { message: error.message, type: "server_error", code: null },
+          });
+        }
+        resolve();
+      });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Admin: runtime-mutable thinking budget
+// ---------------------------------------------------------------------------
+
+export function handleGetThinkingBudget(_req: Request, res: Response): void {
+  res.json({
+    budget: runtimeConfig.defaultThinkingBudget ?? null,
+    allowedLabels: Object.keys(REASONING_EFFORT_MAP),
+  });
+}
+
+export function handleSetThinkingBudget(req: Request, res: Response): void {
+  const body = (req.body ?? {}) as { budget?: unknown };
+  const raw = body.budget;
+
+  if (raw === null || raw === undefined || raw === "") {
+    runtimeConfig.defaultThinkingBudget = undefined;
+    persistRuntimeState();
+    log("admin.thinking_budget.cleared", {});
+    res.json({ budget: null });
+    return;
+  }
+
+  const asString = String(raw);
+  const parsed = parseEffortOrTokens(asString);
+  if (parsed === undefined) {
+    res.status(400).json({
+      error: {
+        message: `Invalid budget "${asString}". Use one of: ${Object.keys(REASONING_EFFORT_MAP).join(", ")}, or a positive integer token count.`,
+        type: "invalid_request_error",
+        code: "invalid_budget",
+      },
+    });
+    return;
+  }
+
+  runtimeConfig.defaultThinkingBudget = asString;
+  persistRuntimeState();
+  log("admin.thinking_budget.set", { budget: asString, tokens: parsed });
+  res.json({ budget: asString, tokens: parsed });
 }
 
 // ---------------------------------------------------------------------------
 // Models endpoint
 // ---------------------------------------------------------------------------
 
-export async function handleModels(_req: Request, res: Response): Promise<void> {
+export async function handleModels(
+  _req: Request,
+  res: Response,
+): Promise<void> {
   const data = await modelAvailability.getPublicModelList();
   res.json({
     object: "list",
@@ -1071,26 +1393,44 @@ export async function handleModels(_req: Request, res: Response): Promise<void> 
 // Enhanced health endpoint (Phase 4b)
 // ---------------------------------------------------------------------------
 
-export async function handleHealth(_req: Request, res: Response): Promise<void> {
+export async function handleHealth(
+  _req: Request,
+  res: Response,
+): Promise<void> {
   let metrics: Array<Record<string, unknown>> | null = null;
-  let storeStats: { conversations: number; messages: number; metrics: number } | null = null;
+  let storeStats: {
+    conversations: number;
+    messages: number;
+    metrics: number;
+  } | null = null;
   let poolStatus: ReturnType<typeof subprocessPool.getStatus> | null = null;
   let recentErrors: Array<Record<string, unknown>> = [];
-  let availability: Awaited<ReturnType<typeof modelAvailability.getSnapshot>> | null = null;
+  let availability: Awaited<
+    ReturnType<typeof modelAvailability.getSnapshot>
+  > | null = null;
   try {
     metrics = conversationStore.getHealthMetrics(60);
     storeStats = conversationStore.getStats();
     recentErrors = conversationStore.getRecentErrors(5);
-  } catch { /* store not initialized yet */ }
+  } catch {
+    /* store not initialized yet */
+  }
   try {
     poolStatus = subprocessPool.getStatus();
-  } catch { /* pool not ready */ }
+  } catch {
+    /* pool not ready */
+  }
   try {
     availability = await modelAvailability.getSnapshot();
-  } catch { /* availability probe failed */ }
+  } catch {
+    /* availability probe failed */
+  }
 
   // Queue status
-  const queueStatus: Record<string, { queued: number; processing: boolean; waitMs?: number }> = {};
+  const queueStatus: Record<
+    string,
+    { queued: number; processing: boolean; waitMs?: number }
+  > = {};
   for (const [convId, entry] of conversationQueues) {
     if (entry.queue.length > 0 || entry.processing) {
       const oldestItem = entry.queue[0];
@@ -1125,15 +1465,17 @@ export async function handleHealth(_req: Request, res: Response): Promise<void> 
       debugQueues: runtimeConfig.debugQueues,
     },
     auth: availability?.auth ?? undefined,
-    models: availability ? {
-      checkedAt: new Date(availability.checkedAt).toISOString(),
-      available: availability.available.map((model) => model.id),
-      unavailable: availability.unavailable.map((entry) => ({
-        id: entry.definition.id,
-        code: entry.error.code,
-        message: entry.error.message,
-      })),
-    } : undefined,
+    models: availability
+      ? {
+          checkedAt: new Date(availability.checkedAt).toISOString(),
+          available: availability.available.map((model) => model.id),
+          unavailable: availability.unavailable.map((entry) => ({
+            id: entry.definition.id,
+            code: entry.error.code,
+            message: entry.error.message,
+          })),
+        }
+      : undefined,
     pool: poolStatus,
     store: storeStats,
     metrics,
