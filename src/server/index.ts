@@ -6,6 +6,7 @@
 import express from "express";
 import { createServer, type Server } from "http";
 import type { Socket } from "net";
+import { performance } from "perf_hooks";
 import {
   handleChatCompletions,
   handleModels,
@@ -17,6 +18,8 @@ import { runtimeConfig } from "../config.js";
 import { auditMiddleware } from "./audit-middleware.js";
 import { errorHandler } from "./error-handler.js";
 import { healthCheck } from "./health-check.js";
+import { observabilityManager } from "../monitoring/observability.js";
+import { tracingManager } from "../monitoring/tracing.js";
 import "../subprocess/pool.js";
 import "../store/conversation.js";
 
@@ -31,6 +34,32 @@ function createApp(): express.Application {
   const app = express();
 
   app.use(express.json({ limit: "10mb" }));
+
+  // Tracing middleware
+  app.use((req, _res, next) => {
+    const traceContext = tracingManager.extractTraceContext(req.headers);
+    (req as any).traceContext = traceContext;
+    next();
+  });
+
+  // Observability middleware
+  app.use((req, res, next) => {
+    const startTime = performance.now();
+    observabilityManager.recordActiveRequest(1);
+
+    const originalSend = res.send;
+    res.send = function(data: any) {
+      const duration = performance.now() - startTime;
+      const isError = res.statusCode >= 400;
+
+      observabilityManager.recordRequest(duration, isError);
+      observabilityManager.recordActiveRequest(-1);
+
+      return originalSend.call(this, data);
+    };
+
+    next();
+  });
 
   // Audit middleware
   app.use(auditMiddleware);
@@ -60,6 +89,18 @@ function createApp(): express.Application {
   app.get("/health", healthCheck);
   app.get("/v1/models", handleModels);
   app.post("/v1/chat/completions", handleChatCompletions);
+
+  // Metrics endpoint
+  app.get("/metrics", (_req, res) => {
+    const snapshot = observabilityManager.getSnapshot();
+    res.json({
+      timestamp: snapshot.timestamp,
+      memory: snapshot.memory,
+      requests: snapshot.requests,
+      latency: snapshot.latency
+    });
+  });
+
   if (runtimeConfig.enableAdminApi) {
     app.get("/admin/thinking-budget", handleGetThinkingBudget);
     app.post("/admin/thinking-budget", handleSetThinkingBudget);
