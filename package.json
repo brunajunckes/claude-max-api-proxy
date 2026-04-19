@@ -39,6 +39,7 @@
   },
   "homepage": "https://github.com/mattschwen/claude-max-api-proxy#readme",
   "dependencies": {
+    "chaos-monkey": "^0.7.2",
     "express": "^4.21.2",
     "uuid": "^11.0.5"
   },
