@@ -20,6 +20,7 @@ import { errorHandler } from "./error-handler.js";
 import { healthCheck } from "./health-check.js";
 import { observabilityManager } from "../monitoring/observability.js";
 import { tracingManager } from "../monitoring/tracing.js";
+import { cacheMiddleware } from "./cache-middleware.js";
 import "../subprocess/pool.js";
 import "../store/conversation.js";
 
@@ -87,7 +88,7 @@ function createApp(): express.Application {
 
   // Enhanced health check
   app.get("/health", healthCheck);
-  app.get("/v1/models", handleModels);
+  app.get("/v1/models", cacheMiddleware("models-v1", 300000), handleModels);
   app.post("/v1/chat/completions", handleChatCompletions);
 
   // Metrics endpoint
