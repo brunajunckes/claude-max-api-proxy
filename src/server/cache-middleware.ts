@@ -33,7 +33,9 @@ class CacheManager {
   set(key: string, data: any): void {
     if (this.cache.size >= this.config.maxSize) {
       const firstKey = this.cache.keys().next().value;
-      this.cache.delete(firstKey);
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+      }
     }
 
     this.cache.set(key, {
@@ -56,6 +58,7 @@ class CacheManager {
 }
 
 export const cacheManager = new CacheManager();
+export { CacheManager };
 
 export function cacheMiddleware(
   cacheKey: string,
