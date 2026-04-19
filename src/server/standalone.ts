@@ -17,6 +17,7 @@ import { sessionManager } from "../session/manager.js";
 import { log } from "../logger.js";
 import { modelAvailability } from "../model-availability.js";
 import { runtimeConfig } from "../config.js";
+import { cliDisplay } from "./cli-display.js";
 
 const DEFAULT_PORT = 3456;
 const SHUTDOWN_GRACE_MS = 30000;
@@ -72,14 +73,11 @@ async function main(): Promise<void> {
     const host = process.env.HOST || "127.0.0.1";
     await startServer({ port, host });
     log("server.start", { port });
-    console.log("\nServer ready. Test with:");
-    console.log(
-      `  curl -X POST http://localhost:${port}/v1/chat/completions \\`,
-    );
-    console.log(`    -H "Content-Type: application/json" \\`);
-    console.log(
-      `    -d '{"model": "claude-sonnet-4", "messages": [{"role": "user", "content": "Hello!"}]}'`,
-    );
+
+    // Show status box and start live footer
+    cliDisplay.renderBox(port, host);
+    cliDisplay.start();
+
     console.log("\nPress Ctrl+C to stop.\n");
   } catch (err) {
     console.error("Failed to start server:", err);
@@ -148,6 +146,7 @@ async function main(): Promise<void> {
 
     // 5. Stop server and exit
     try {
+      cliDisplay.stop();
       await stopServer();
     } catch {
       /* already closing */

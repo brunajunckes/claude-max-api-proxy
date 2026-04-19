@@ -21,6 +21,7 @@ import { healthCheck } from "./health-check.js";
 import { observabilityManager } from "../monitoring/observability.js";
 import { tracingManager } from "../monitoring/tracing.js";
 import { cacheMiddleware } from "./cache-middleware.js";
+import { createRateLimiter } from "./rate-limit.js";
 import "../subprocess/pool.js";
 import "../store/conversation.js";
 
@@ -65,6 +66,14 @@ function createApp(): express.Application {
   // Audit middleware
   app.use(auditMiddleware);
 
+  // Rate limiting middleware
+  const rateLimiter = createRateLimiter({
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000'), // 1 min default
+    maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'),
+    perConversation: process.env.RATE_LIMIT_PER_CONVERSATION !== 'false',
+  });
+  app.use(rateLimiter.middleware());
+
   app.use((req, _res, next) => {
     if (process.env.DEBUG) {
       console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
@@ -97,6 +106,7 @@ function createApp(): express.Application {
     res.json({
       timestamp: snapshot.timestamp,
       memory: snapshot.memory,
+      cpu: snapshot.cpu,
       requests: snapshot.requests,
       latency: snapshot.latency
     });
