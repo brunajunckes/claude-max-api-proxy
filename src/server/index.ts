@@ -22,6 +22,8 @@ import { observabilityManager } from "../monitoring/observability.js";
 import { tracingManager } from "../monitoring/tracing.js";
 import { cacheMiddleware } from "./cache-middleware.js";
 import { createRateLimiter } from "./rate-limit.js";
+import { securityHeadersMiddleware } from "./security-headers.js";
+import { inputValidationMiddleware } from "./input-validation.js";
 import "../subprocess/pool.js";
 import "../store/conversation.js";
 
@@ -36,6 +38,12 @@ function createApp(): express.Application {
   const app = express();
 
   app.use(express.json({ limit: "10mb" }));
+
+  // Security headers middleware (high priority)
+  app.use(securityHeadersMiddleware);
+
+  // Input validation middleware
+  app.use(inputValidationMiddleware);
 
   // Tracing middleware
   app.use((req, _res, next) => {
@@ -88,6 +96,7 @@ function createApp(): express.Application {
       "Access-Control-Allow-Headers",
       "Content-Type, Authorization, X-Thinking-Budget",
     );
+    // CORS headers respect security headers set above
     next();
   });
 

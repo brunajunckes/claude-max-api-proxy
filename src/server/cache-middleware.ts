@@ -4,6 +4,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
+import { tracingManager } from '../monitoring/tracing.js';
 
 export interface CacheConfig {
   ttl: number;
@@ -13,28 +14,56 @@ export interface CacheConfig {
 class CacheManager {
   private cache = new Map<string, { data: any; expires: number }>();
   private config: CacheConfig;
+  private hits = 0;
+  private misses = 0;
+  private evictions = 0;
 
   constructor(config: CacheConfig = { ttl: 300000, maxSize: 100 }) {
     this.config = config;
   }
 
-  get(key: string): any | null {
+  get(key: string, traceId?: string): any | null {
+    const startTime = Date.now();
     const entry = this.cache.get(key);
-    if (!entry) return null;
 
-    if (Date.now() > entry.expires) {
+    let status: 'hit' | 'miss' | 'expired' = 'miss';
+    let result = null;
+
+    if (!entry) {
+      this.misses++;
+      status = 'miss';
+    } else if (Date.now() > entry.expires) {
       this.cache.delete(key);
-      return null;
+      this.misses++;
+      status = 'expired';
+    } else {
+      this.hits++;
+      status = 'hit';
+      result = entry.data;
     }
 
-    return entry.data;
+    if (traceId) {
+      const durationMs = Date.now() - startTime;
+      tracingManager.recordOperationSpan(traceId, 'cache.get', durationMs, {
+        key,
+        status,
+        operation: 'get'
+      });
+    }
+
+    return result;
   }
 
-  set(key: string, data: any): void {
+  set(key: string, data: any, traceId?: string): void {
+    const startTime = Date.now();
+    let evicted = false;
+
     if (this.cache.size >= this.config.maxSize) {
       const firstKey = this.cache.keys().next().value;
       if (firstKey !== undefined) {
         this.cache.delete(firstKey);
+        this.evictions++;
+        evicted = true;
       }
     }
 
@@ -42,6 +71,16 @@ class CacheManager {
       data,
       expires: Date.now() + this.config.ttl
     });
+
+    if (traceId) {
+      const durationMs = Date.now() - startTime;
+      tracingManager.recordOperationSpan(traceId, 'cache.set', durationMs, {
+        key,
+        evicted,
+        operation: 'set',
+        cacheSize: this.cache.size
+      });
+    }
   }
 
   clear(): void {
@@ -49,11 +88,25 @@ class CacheManager {
   }
 
   stats() {
+    const total = this.hits + this.misses;
+    const hitRate = total > 0 ? (this.hits / total) * 100 : 0;
+
     return {
       size: this.cache.size,
       maxSize: this.config.maxSize,
-      ttl: this.config.ttl
+      ttl: this.config.ttl,
+      hits: this.hits,
+      misses: this.misses,
+      evictions: this.evictions,
+      hitRate: parseFloat(hitRate.toFixed(2)),
+      totalRequests: total
     };
+  }
+
+  resetStats(): void {
+    this.hits = 0;
+    this.misses = 0;
+    this.evictions = 0;
   }
 }
 
@@ -68,15 +121,16 @@ export function cacheMiddleware(
     cacheManager['config'].ttl = ttl;
   }
 
-  return (_req: Request, res: Response, next: NextFunction) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const traceId = (req as any).traceContext?.traceId;
     const originalJson = res.json;
 
     res.json = function(data: any) {
-      cacheManager.set(cacheKey, data);
+      cacheManager.set(cacheKey, data, traceId);
       return originalJson.call(this, data);
     };
 
-    const cached = cacheManager.get(cacheKey);
+    const cached = cacheManager.get(cacheKey, traceId);
     if (cached) {
       return res.json(cached);
     }

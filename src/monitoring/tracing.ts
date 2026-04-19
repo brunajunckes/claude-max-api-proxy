@@ -10,8 +10,18 @@ export interface TraceContext {
   sampled: boolean;
 }
 
+export interface SpanEvent {
+  name: string;
+  startTime: number;
+  endTime?: number;
+  attributes?: Record<string, any>;
+  status?: 'unset' | 'ok' | 'error';
+}
+
 class TracingManager {
   private activeSpans = new Map<string, TraceContext>();
+  private spanEvents = new Map<string, SpanEvent[]>();
+  private exporter: 'console' | 'jaeger' | 'tempo' = 'console';
 
   extractTraceContext(headers: Record<string, any>): TraceContext {
     const traceparent = headers['traceparent'] || '';
@@ -53,10 +63,76 @@ class TracingManager {
       spanId
     });
 
+    if (process.env.DEBUG_TRACING) {
+      console.log(`[TRACE] Start span: ${name} (${spanId}) - parent: ${context.spanId}`);
+    }
+
     return () => {
       this.activeSpans.delete(fullSpanId);
+      if (process.env.DEBUG_TRACING) {
+        console.log(`[TRACE] End span: ${name} (${spanId})`);
+      }
     };
+  }
+
+  getActiveSpanCount(): number {
+    return this.activeSpans.size;
+  }
+
+  getAllActiveSpans(): TraceContext[] {
+    return Array.from(this.activeSpans.values());
+  }
+
+  recordSpanEvent(traceId: string, event: SpanEvent): void {
+    if (!this.spanEvents.has(traceId)) {
+      this.spanEvents.set(traceId, []);
+    }
+    this.spanEvents.get(traceId)?.push(event);
+
+    if (process.env.DEBUG_TRACING) {
+      console.log(`[TRACE] Event: ${event.name} (${event.attributes?.operation || 'N/A'})`);
+    }
+  }
+
+  recordOperationSpan(
+    traceId: string,
+    operation: string,
+    durationMs: number,
+    attributes?: Record<string, any>
+  ): void {
+    const event: SpanEvent = {
+      name: operation,
+      startTime: Date.now() - durationMs,
+      endTime: Date.now(),
+      attributes,
+      status: (attributes?.error ? 'error' : 'ok') as 'ok' | 'error'
+    };
+    this.recordSpanEvent(traceId, event);
+  }
+
+  setExporter(exporter: 'console' | 'jaeger' | 'tempo'): void {
+    this.exporter = exporter;
+    if (process.env.DEBUG_TRACING) {
+      console.log(`[TRACE] Exporter set to: ${exporter}`);
+    }
+  }
+
+  getSpanEvents(traceId: string): SpanEvent[] {
+    return this.spanEvents.get(traceId) || [];
+  }
+
+  flushSpans(traceId: string): void {
+    const events = this.spanEvents.get(traceId);
+    if (!events || events.length === 0) return;
+
+    if (this.exporter === 'console') {
+      console.log(`[TRACE FLUSH] ${traceId} - ${events.length} spans`);
+    }
+    // TODO: Implement Jaeger/Tempo exporters
+
+    this.spanEvents.delete(traceId);
   }
 }
 
 export const tracingManager = new TracingManager();
+export { TracingManager };

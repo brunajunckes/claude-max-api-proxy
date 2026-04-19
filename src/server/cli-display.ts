@@ -4,6 +4,7 @@
  */
 
 import { observabilityManager } from "../monitoring/observability.js";
+import { cacheManager } from "./cache-middleware.js";
 
 class CliDisplay {
   private displayInterval: NodeJS.Timeout | null = null;
@@ -42,12 +43,16 @@ class CliDisplay {
       (memory.heap_used_mb / memory.heap_total_mb) * 100
     );
 
+    const cacheStats = cacheManager.stats();
+    const cacheHitRate = cacheStats.hitRate.toFixed(1);
+
     const parts = [
       `MEM: ${memory.heap_used_mb}/${memory.heap_total_mb}MB (${memPercent}%)`,
       `CPU: ${cpu.percent.toFixed(1)}%`,
       `REQ: ${requests.total}(${requests.active} active)`,
       `ERR: ${requests.errors}`,
       `LAT: p50=${latency.p50.toFixed(0)}ms p95=${latency.p95.toFixed(0)}ms`,
+      `CACHE: ${cacheHitRate}% hit rate`,
     ];
 
     return `[${new Date().toLocaleTimeString()}] ${parts.join(" | ")}`;
@@ -65,6 +70,7 @@ class CliDisplay {
   ): void {
     const snapshot = observabilityManager.getSnapshot();
     const { memory, cpu, requests, latency } = snapshot;
+    const cacheStats = cacheManager.stats();
 
     const line = "─".repeat(80);
     console.log(`
@@ -78,6 +84,7 @@ class CliDisplay {
 │ CPU: ${cpu.percent.toFixed(1)}%  (User: ${cpu.user_ms}ms, System: ${cpu.system_ms}ms)                          │
 │ Requests: ${requests.total} total, ${requests.active} active, ${requests.errors} errors                             │
 │ Latency: p50=${latency.p50.toFixed(0)}ms, p95=${latency.p95.toFixed(0)}ms, p99=${latency.p99.toFixed(0)}ms                   │
+│ Cache: ${cacheStats.hitRate.toFixed(1)}% hit rate (${cacheStats.hits}/${cacheStats.totalRequests})                                    │
 ├${line}┤
 │ Press Ctrl+C to stop                                                         │
 └${line}┘

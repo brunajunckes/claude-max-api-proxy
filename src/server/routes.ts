@@ -45,6 +45,7 @@ import type {
   ClaudeCliStreamEvent,
 } from "../types/claude-cli.js";
 import { runtimeConfig, persistRuntimeState } from "../config.js";
+import { cacheManager } from "./cache-middleware.js";
 
 // ---------------------------------------------------------------------------
 // Thinking budget resolution
@@ -1465,6 +1466,7 @@ export async function handleHealth(
       debugQueues: runtimeConfig.debugQueues,
       enableAdminApi: runtimeConfig.enableAdminApi,
     },
+    cache: cacheManager.stats(),
     auth: availability?.auth ?? undefined,
     models: availability
       ? {
