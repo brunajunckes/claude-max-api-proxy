@@ -14,6 +14,9 @@ import {
   handleSetThinkingBudget,
 } from "./routes.js";
 import { runtimeConfig } from "../config.js";
+import { auditMiddleware } from "./audit-middleware.js";
+import { errorHandler } from "./error-handler.js";
+import { healthCheck } from "./health-check.js";
 import "../subprocess/pool.js";
 import "../store/conversation.js";
 
@@ -28,6 +31,9 @@ function createApp(): express.Application {
   const app = express();
 
   app.use(express.json({ limit: "10mb" }));
+
+  // Audit middleware
+  app.use(auditMiddleware);
 
   app.use((req, _res, next) => {
     if (process.env.DEBUG) {
@@ -50,7 +56,8 @@ function createApp(): express.Application {
     res.sendStatus(200);
   });
 
-  app.get("/health", handleHealth);
+  // Enhanced health check
+  app.get("/health", healthCheck);
   app.get("/v1/models", handleModels);
   app.post("/v1/chat/completions", handleChatCompletions);
   if (runtimeConfig.enableAdminApi) {
@@ -69,23 +76,8 @@ function createApp(): express.Application {
     });
   });
 
-  app.use(
-    (
-      err: Error,
-      _req: express.Request,
-      res: express.Response,
-      _next: express.NextFunction,
-    ) => {
-      console.error("[Server Error]:", err.message);
-      res.status(500).json({
-        error: {
-          message: err.message,
-          type: "server_error",
-          code: null,
-        },
-      });
-    },
-  );
+  // Enhanced error handler
+  app.use(errorHandler);
 
   return app;
 }
