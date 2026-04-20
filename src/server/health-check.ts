@@ -36,6 +36,13 @@ export function isStartupComplete(): boolean {
   return Object.values(startupState).every(v => v === true);
 }
 
+/**
+ * Main health check handler (alias for readiness)
+ */
+export async function healthCheck(req: Request, res: Response): Promise<void> {
+  return handleHealthReadiness(req, res);
+}
+
 export async function handleHealthLiveness(req: Request, res: Response): Promise<void> {
   const uptime = Math.floor((Date.now() - startTime) / 1000);
   const status: HealthCheckStatus = {
