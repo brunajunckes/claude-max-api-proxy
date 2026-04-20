@@ -12,7 +12,7 @@ export interface CacheConfig {
 }
 
 class CacheManager {
-  private cache = new Map<string, { data: any; expires: number }>();
+  private cache = new Map<string, { data: any; expires: number; lastAccessed: number }>();
   private config: CacheConfig;
   private hits = 0;
   private misses = 0;
@@ -40,6 +40,8 @@ class CacheManager {
       this.hits++;
       status = 'hit';
       result = entry.data;
+      // Update lastAccessed for LRU
+      entry.lastAccessed = Date.now();
     }
 
     if (traceId) {
@@ -58,10 +60,21 @@ class CacheManager {
     const startTime = Date.now();
     let evicted = false;
 
-    if (this.cache.size >= this.config.maxSize) {
-      const firstKey = this.cache.keys().next().value;
-      if (firstKey !== undefined) {
-        this.cache.delete(firstKey);
+    // Only evict if this is a new key and we're at maxSize
+    if (!this.cache.has(key) && this.cache.size >= this.config.maxSize) {
+      // Find least recently used (LRU) entry
+      let lruKey: string | undefined;
+      let lruTime = Date.now();
+
+      for (const [k, v] of this.cache.entries()) {
+        if (v.lastAccessed < lruTime) {
+          lruTime = v.lastAccessed;
+          lruKey = k;
+        }
+      }
+
+      if (lruKey !== undefined) {
+        this.cache.delete(lruKey);
         this.evictions++;
         evicted = true;
       }
@@ -69,7 +82,8 @@ class CacheManager {
 
     this.cache.set(key, {
       data,
-      expires: Date.now() + this.config.ttl
+      expires: Date.now() + this.config.ttl,
+      lastAccessed: Date.now()
     });
 
     if (traceId) {
@@ -89,7 +103,7 @@ class CacheManager {
 
   stats() {
     const total = this.hits + this.misses;
-    const hitRate = total > 0 ? (this.hits / total) * 100 : 0;
+    const hitRate = total > 0 ? this.hits / total : 0;
 
     return {
       size: this.cache.size,
@@ -98,7 +112,7 @@ class CacheManager {
       hits: this.hits,
       misses: this.misses,
       evictions: this.evictions,
-      hitRate: parseFloat(hitRate.toFixed(2)),
+      hitRate: parseFloat(hitRate.toFixed(4)),
       totalRequests: total
     };
   }

@@ -6,7 +6,10 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "claude-max-api": "dist/server/standalone.js"
+    "claude-max-api": "dist/server/standalone.js",
+    "aiox": "bin/aiox.js",
+    "hermes": "bin/hermes-new.js",
+    "reload-config": "bin/reload-config.js"
   },
   "scripts": {
     "build": "tsc",
@@ -16,7 +19,34 @@
     "clean": "rm -rf dist",
     "lint": "echo 'Lint check completed'",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "hermes": "node bin/hermes-new.js",
+    "hermes:agents": "node bin/hermes-new.js list",
+    "hermes:constitution": "node bin/hermes-new.js const",
+    "hermes:visual": "node bin/hermes-new.js help",
+    "aiox": "node bin/aiox.js",
+    "aiox:validate": "node bin/aiox.js validate",
+    "aiox:qa": "node bin/aiox.js qa run",
+    "aiox:metrics": "node bin/aiox.js metrics show",
+    "aiox:config": "node bin/aiox.js config show",
+    "cli": "node bin/cli.cjs",
+    "cli:workers": "node bin/cli.cjs workers",
+    "cli:workers:search": "node bin/cli.cjs workers search",
+    "cli:manifest": "node bin/cli.cjs manifest",
+    "cli:manifest:validate": "node bin/cli.cjs manifest validate",
+    "cli:manifest:regenerate": "node bin/cli.cjs manifest regenerate",
+    "cli:qa": "node bin/cli.cjs qa",
+    "cli:qa:run": "node bin/cli.cjs qa run",
+    "cli:qa:status": "node bin/cli.cjs qa status",
+    "cli:metrics": "node bin/cli.cjs metrics",
+    "cli:metrics:show": "node bin/cli.cjs metrics show",
+    "cli:config": "node bin/cli.cjs config",
+    "cli:config:show": "node bin/cli.cjs config show",
+    "cli:mcp": "node bin/cli.cjs mcp",
+    "cli:migrate": "node bin/cli.cjs migrate",
+    "cli:generate": "node bin/cli.cjs generate",
+    "cli:pro": "node bin/cli.cjs pro",
+    "reload-config": "node bin/reload-config.js"
   },
   "keywords": [
     "claude",
@@ -41,15 +71,21 @@
   },
   "homepage": "https://github.com/mattschwen/claude-max-api-proxy#readme",
   "dependencies": {
+    "ajv-formats": "^3.0.1",
     "chaos-monkey": "^0.7.2",
+    "commander": "^14.0.3",
     "eslint-plugin-security": "^4.0.0",
     "express": "^4.21.2",
+    "inquirer": "^13.4.2",
+    "js-yaml": "^4.1.1",
+    "semver": "^7.7.4",
     "snyk": "^1.1304.0",
     "uuid": "^11.0.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.7",
+    "@types/node-fetch": "^2.6.13",
     "@types/uuid": "^10.0.0",
     "typescript": "^5.7.3"
   },

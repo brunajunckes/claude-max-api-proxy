@@ -9,6 +9,7 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import { APIError } from './error-handler.js';
+import { isValidModel } from '../models.js';
 
 const MAX_MESSAGE_LENGTH = 100000;
 const MAX_MESSAGES_ARRAY = 1000;
@@ -65,9 +66,9 @@ function validateChatCompletionRequest(body: any): ChatCompletionRequest {
     throw new APIError('Field \'model\' is required and must be a string', 400);
   }
 
-  if (!['claude', 'opus', 'sonnet', 'haiku'].includes(body.model)) {
+  if (!isValidModel(body.model)) {
     throw new APIError(
-      `Invalid model '${body.model}'. Must be one of: claude, opus, sonnet, haiku`,
+      `Invalid model '${body.model}'. Supported models: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5, or short aliases: opus, sonnet, haiku, claude`,
       400
     );
   }
@@ -137,7 +138,7 @@ function validateChatCompletionRequest(body: any): ChatCompletionRequest {
   }
 
   // Validate system prompt if provided
-  if (body.system) {
+  if (body.system !== undefined && body.system !== null) {
     validateString(body.system, 'system', MAX_SYSTEM_PROMPT_LENGTH);
   }
 

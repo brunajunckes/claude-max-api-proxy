@@ -16,7 +16,7 @@ import { log } from "../logger.js";
 const SESSION_FILE =
   process.env.SESSION_FILE ||
   path.join(process.env.HOME || "/tmp", ".claude-code-cli-sessions.json");
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const SESSION_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours instead of 24 to prevent memory bloat
 const MAX_TASKS_PER_SESSION = 50;
 const MAX_RESUME_FAILURES = 2;
 
@@ -240,9 +240,11 @@ sessionManager
   .load()
   .catch((err) => console.error("[SessionManager] Load error:", err));
 
+// Run cleanup every 10 minutes instead of 1 hour to prevent memory bloat
+sessionManager.cleanup(); // Run immediately on startup
 setInterval(
   () => {
     sessionManager.cleanup();
   },
-  60 * 60 * 1000,
+  10 * 60 * 1000, // 10 minutes
 );

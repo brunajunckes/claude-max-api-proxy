@@ -29,7 +29,9 @@ export type LogEvent =
   | "server.shutdown"
   | "server.start"
   | "admin.thinking_budget.set"
-  | "admin.thinking_budget.cleared";
+  | "admin.thinking_budget.cleared"
+  | "admin.config.reload.success"
+  | "admin.config.reload.error";
 
 export interface LogEntry {
   ts: string;

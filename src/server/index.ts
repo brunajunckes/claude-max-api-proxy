@@ -13,6 +13,7 @@ import {
   handleHealth,
   handleGetThinkingBudget,
   handleSetThinkingBudget,
+  handleConfigReload,
 } from "./routes.js";
 import { runtimeConfig } from "../config.js";
 import { auditMiddleware } from "./audit-middleware.js";
@@ -125,6 +126,7 @@ function createApp(): express.Application {
     app.get("/admin/thinking-budget", handleGetThinkingBudget);
     app.post("/admin/thinking-budget", handleSetThinkingBudget);
     app.put("/admin/thinking-budget", handleSetThinkingBudget);
+    app.post("/admin/config/reload", handleConfigReload);
   }
 
   app.use((_req, res) => {

@@ -46,6 +46,9 @@ import type {
 } from "../types/claude-cli.js";
 import { runtimeConfig, persistRuntimeState } from "../config.js";
 import { cacheManager } from "./cache-middleware.js";
+import { getMetricsSnapshot } from "../monitoring/metrics.js";
+import { getConfigManager } from "../config/manager.js";
+import { validateConfig } from "../config/schema.js";
 
 // ---------------------------------------------------------------------------
 // Thinking budget resolution
@@ -1376,6 +1379,63 @@ export function handleSetThinkingBudget(req: Request, res: Response): void {
 }
 
 // ---------------------------------------------------------------------------
+// Config reload endpoint
+// ---------------------------------------------------------------------------
+
+export function handleConfigReload(req: Request, res: Response): void {
+  const body = (req.body ?? {}) as { configPath?: unknown };
+  const configPath = typeof body.configPath === "string" ? body.configPath : undefined;
+
+  const configMgr = getConfigManager();
+
+  try {
+    const { oldConfig, newConfig } = configMgr.reloadConfig(configPath);
+    const history = configMgr.getReloadHistory();
+    const changes = computeConfigChanges(oldConfig, newConfig);
+
+    log("admin.config.reload.success", { configPath, changes });
+
+    res.json({
+      success: true,
+      message: "Configuration reloaded successfully",
+      oldConfig,
+      newConfig,
+      changes,
+      history: history.map((entry) => ({
+        timestamp: new Date(entry.timestamp).toISOString(),
+        success: entry.success,
+        changes: entry.changes || {},
+        error: entry.error || null,
+      })),
+    });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    log("admin.config.reload.error", { configPath, error: errorMsg });
+
+    res.status(400).json({
+      success: false,
+      error: {
+        message: errorMsg,
+        type: "config_reload_error",
+        code: "reload_failed",
+      },
+    });
+  }
+}
+
+function computeConfigChanges(oldConfig: any, newConfig: any): Record<string, { old: any; new: any }> {
+  const changes: Record<string, { old: any; new: any }> = {};
+  for (const key of Object.keys(newConfig)) {
+    const oldVal = oldConfig[key];
+    const newVal = newConfig[key];
+    if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+      changes[key] = { old: oldVal, new: newVal };
+    }
+  }
+  return changes;
+}
+
+// ---------------------------------------------------------------------------
 // Models endpoint
 // ---------------------------------------------------------------------------
 
@@ -1449,10 +1509,21 @@ export async function handleHealth(
   // Session failure stats
   const failureStats = sessionManager.getFailureStats();
 
+  // Memory monitoring (prevents OOM)
+  const memUsage = process.memoryUsage();
+  const memPercent = Math.round((memUsage.heapUsed / memUsage.heapTotal) * 100);
+  const memWarning = memPercent > 80 ? "CRITICAL_MEMORY_USAGE" : memPercent > 70 ? "HIGH_MEMORY_USAGE" : null;
+
   res.json({
     status: "ok",
     provider: "claude-code-cli",
     timestamp: new Date().toISOString(),
+    memory: {
+      heapUsedMB: Math.round(memUsage.heapUsed / 1024 / 1024),
+      heapTotalMB: Math.round(memUsage.heapTotal / 1024 / 1024),
+      percentUsed: memPercent,
+      warning: memWarning,
+    },
     sessions: {
       active: sessionManager.size,
       failureStats,
