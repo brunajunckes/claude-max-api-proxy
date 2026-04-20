@@ -1,0 +1,46 @@
+{
+  "lastRun": "2026-04-20T00:31:55.970Z",
+  "duration": 1734,
+  "layer1": {
+    "layer": "Layer 1: Pre-commit",
+    "enabled": true,
+    "pass": false,
+    "duration": 1731,
+    "checks": {
+      "total": 2,
+      "passed": 1,
+      "failed": 1,
+      "warnings": 0
+    },
+    "results": [
+      {
+        "check": "lint",
+        "pass": true,
+        "exitCode": 0,
+        "errors": 0,
+        "warnings": 0,
+        "duration": 234,
+        "message": "Lint passed (0 errors, 0 warnings)",
+        "timestamp": 1776645114468
+      },
+      {
+        "check": "test",
+        "pass": false,
+        "exitCode": 123,
+        "tests": {
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "total": 0
+        },
+        "coverage": null,
+        "duration": 1496,
+        "message": "Tests failed (0 passed, 0 failed)",
+        "timestamp": 1776645115964
+      }
+    ]
+  },
+  "layer2": null,
+  "layer3": null,
+  "signoffs": {}
+}

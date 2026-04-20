@@ -60,11 +60,11 @@ class CacheManager {
     const startTime = Date.now();
     let evicted = false;
 
-    // Only evict if this is a new key and we're at maxSize
+    // Evict if adding new key would exceed maxSize
     if (!this.cache.has(key) && this.cache.size >= this.config.maxSize) {
       // Find least recently used (LRU) entry
-      let lruKey: string | undefined;
-      let lruTime = Date.now();
+      let lruKey: string | null = null;
+      let lruTime = Infinity;
 
       for (const [k, v] of this.cache.entries()) {
         if (v.lastAccessed < lruTime) {
@@ -73,7 +73,7 @@ class CacheManager {
         }
       }
 
-      if (lruKey !== undefined) {
+      if (lruKey !== null) {
         this.cache.delete(lruKey);
         this.evictions++;
         evicted = true;

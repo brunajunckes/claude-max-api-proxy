@@ -1,0 +1,50 @@
+╔════════════════════════════════════════════════════════════════════╗
+║                    HERMES CLI - QUICK START                       ║
+╚════════════════════════════════════════════════════════════════════╝
+
+COMANDO BASE:
+  npm run hermes [command]
+
+AGENTES (12 disponíveis):
+  npm run hermes @dev              → Dev agent
+  npm run hermes @qa               → QA agent
+  npm run hermes @architect        → Architect agent
+  npm run hermes @devops           → DevOps agent
+  npm run hermes @pm               → Project Manager
+  npm run hermes @po               → Product Owner
+  npm run hermes @sm               → Scrum Master
+  npm run hermes @analyst          → Data Analyst
+  npm run hermes @data-engineer    → Data Engineer
+  npm run hermes @ux-design-expert → UX Designer
+  npm run hermes @squad-creator    → Squad Creator
+  npm run hermes @aiox-master      → AIOX Master
+
+FRAMEWORK:
+  npm run hermes:agents            → Listar agentes
+  npm run hermes:stories           → Listar stories
+  npm run hermes:constitution      → Ver constitution
+  npm run hermes:health            → System health
+  npm run hermes -- --help         → Ajuda completa
+
+AIOX COMMANDS:
+  npm run hermes aiox workers search "query"
+  npm run hermes aiox manifest validate
+  npm run hermes aiox qa run
+  npm run hermes aiox metrics show
+
+ESTRUTURA:
+  .aiox-core/                      → Framework AIOX integrado
+  bin/hermes.js                    → CLI Entry point
+  docs/stories/                    → Stories em progresso
+  HERMES_CLI_SETUP.md              → Documentação completa
+
+PRINCÍPIOS:
+  ✓ CLI First       - Tudo funciona em CLI primeiro
+  ✓ Story-Driven    - Development começa com story
+  ✓ Quality First   - Múltiplos gates: lint/typecheck/test
+  ✓ Agent Authority - Cada agente tem escopo exclusivo
+  ✓ No Invention    - Specs seguem requisitos
+
+═══════════════════════════════════════════════════════════════════════
+
+CLI-First. Story-Driven. Agent-Orchestrated.

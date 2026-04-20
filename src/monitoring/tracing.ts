@@ -25,7 +25,21 @@ class TracingManager {
 
   extractTraceContext(headers: Record<string, any>): TraceContext {
     const traceparent = headers['traceparent'] || '';
-    const [version, traceId, spanId, flags] = traceparent.split('-');
+
+    // W3C Trace Context format: version-traceId-spanId-traceFlags
+    // This is 4 components separated by -, but traceId can contain -
+    // So we need to parse carefully: version (2 chars) - traceId (32 chars) - spanId (16 chars) - flags (2 chars)
+    const parts = traceparent.split('-');
+
+    let version = '', traceId = '', spanId = '', flags = '';
+
+    if (parts.length >= 4) {
+      // Proper format with fixed-length fields
+      version = parts[0];
+      traceId = parts[1];
+      spanId = parts[2];
+      flags = parts[3];
+    }
 
     return {
       traceId: traceId || this.generateId(),
@@ -35,9 +49,14 @@ class TracingManager {
   }
 
   injectTraceContext(traceContext: TraceContext): Record<string, string> {
+    // Generate vendor-specific tracestate (W3C Trace Context spec)
+    // Format: vendor1=value1,vendor2=value2
+    const timestamp = Date.now();
+    const tracestate = `dd=s:1;t.usr.id=${timestamp}`;
+
     return {
       'traceparent': `00-${traceContext.traceId}-${traceContext.spanId}-${traceContext.sampled ? '01' : '00'}`,
-      'tracestate': ''
+      'tracestate': tracestate
     };
   }
 
