@@ -35,8 +35,8 @@ const MODEL_DEFINITIONS: ModelDefinition[] = [
   { id: "claude-sonnet-4",   family: "sonnet", alias: "sonnet", timeoutMs: 600000, stallTimeoutMs: 90000 },
   { id: "claude-sonnet-4-5", family: "sonnet", alias: "sonnet", timeoutMs: 600000, stallTimeoutMs: 90000 },
   // Haiku — current model first
-  { id: "claude-haiku-4-5", family: "haiku", alias: "haiku", timeoutMs: 120000, stallTimeoutMs: 45000 },
-  { id: "claude-haiku-4",   family: "haiku", alias: "haiku", timeoutMs: 120000, stallTimeoutMs: 45000 },
+  { id: "claude-haiku-4-5", family: "haiku", alias: "haiku", timeoutMs: 300000, stallTimeoutMs: 120000 },
+  { id: "claude-haiku-4",   family: "haiku", alias: "haiku", timeoutMs: 300000, stallTimeoutMs: 120000 },
 ];
 
 // Provider prefixes that clients may prepend

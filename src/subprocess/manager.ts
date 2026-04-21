@@ -200,8 +200,10 @@ export class ClaudeSubprocess extends EventEmitter {
       "--include-partial-messages",
       "--model",
       options.model,
-      "--dangerously-skip-permissions",
     ];
+    if (process.getuid && process.getuid() !== 0) {
+      args.push("--dangerously-skip-permissions");
+    }
 
     if (options.isResume && options.sessionId) {
       args.push("--resume", options.sessionId);

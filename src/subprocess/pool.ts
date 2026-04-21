@@ -14,6 +14,8 @@ class SubprocessPool {
   private warming = false;
 
   async warm(): Promise<void> {
+    // OLLAMA-ONLY RULE patch 2026-04-21: warmup disabled to stop spawning claude CLI loops
+    return;
     if (this.warming) return;
     this.warming = true;
     const isInitial = this.warmedAt === 0;

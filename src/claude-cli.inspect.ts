@@ -310,6 +310,10 @@ export async function verifyAuth(): Promise<{
 export async function probeModelAvailability(
   model: string,
 ): Promise<ModelProbeResult> {
+  // OLLAMA-ONLY RULE patch 2026-04-21: skip probe to save Claude tokens.
+  return { ok: true, model, resolvedModel: model };
+  // unreachable original body below:
+  
   const result = await runClaudeCommand(
     ["--print", "--output-format", "json", "--model", model, PROBE_PROMPT],
     60000,
