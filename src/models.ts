@@ -27,6 +27,7 @@ export interface ModelDefinition {
  */
 const MODEL_DEFINITIONS: ModelDefinition[] = [
   // Opus — current model first (becomes canonical via CANONICAL_IDS)
+  { id: "claude-opus-4-7", family: "opus",   alias: "opus",   timeoutMs: 1800000, stallTimeoutMs: 120000 },
   { id: "claude-opus-4-6", family: "opus",   alias: "opus",   timeoutMs: 1800000, stallTimeoutMs: 120000 },
   { id: "claude-opus-4",   family: "opus",   alias: "opus",   timeoutMs: 1800000, stallTimeoutMs: 120000 },
   { id: "claude-opus-4-5", family: "opus",   alias: "opus",   timeoutMs: 1800000, stallTimeoutMs: 120000 },
